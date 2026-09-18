@@ -1,0 +1,174 @@
+name: agentic-manim
+
+x-common: &common
+  environment:
+    DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent
+    RENDER_DATABASE_URL: postgresql+psycopg://renderer:renderer@postgres:5432/renderer
+    BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+    STORAGE_BACKEND: s3
+    S3_ENDPOINT_URL: http://minio:9000
+    S3_ACCESS_KEY: minio
+    S3_SECRET_KEY: minio-secret
+    S3_BUCKET: manim-artifacts
+  depends_on:
+    postgres:
+      condition: service_healthy
+    rabbitmq:
+      condition: service_healthy
+    minio-init:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: agent
+      POSTGRES_PASSWORD: agent
+      POSTGRES_DB: agent
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init.sql:/docker-entrypoint-initdb.d/10-renderer.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U agent -d agent"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  rabbitmq:
+    image: rabbitmq:3.13-management-alpine
+    ports:
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address :9001
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: minio-secret
+    ports:
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  minio-init:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - mc alias set local http://minio:9000 minio minio-secret && mc mb --ignore-existing local/manim-artifacts
+
+  runtime-image:
+    image: agentic-manim-runtime:local
+    build:
+      context: .
+      dockerfile: docker/runtime.Dockerfile
+    entrypoint: ["/bin/true"]
+    restart: "no"
+
+  control-api:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/control.Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent
+      BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio-secret
+      S3_BUCKET: manim-artifacts
+      RENDER_SERVICE_URL: http://render-api:8010
+      WORKFLOW_MODE: celery
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-fake}
+      API_KEY: ${API_KEY:-dev-secret}
+      INTERNAL_RENDER_TOKEN: ${INTERNAL_RENDER_TOKEN:-render-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TEXT_MODEL: ${OPENAI_TEXT_MODEL:-gpt-4o}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
+    ports:
+      - "8000:8000"
+
+  agent-worker:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/control.Dockerfile
+    command: ["celery", "-A", "manim_agent.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://agent:agent@postgres:5432/agent
+      BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio-secret
+      S3_BUCKET: manim-artifacts
+      RENDER_SERVICE_URL: http://render-api:8010
+      MODEL_PROVIDER: ${MODEL_PROVIDER:-fake}
+      INTERNAL_RENDER_TOKEN: ${INTERNAL_RENDER_TOKEN:-render-secret}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_TEXT_MODEL: ${OPENAI_TEXT_MODEL:-gpt-4o}
+      OPENAI_VISION_MODEL: ${OPENAI_VISION_MODEL:-gpt-4o}
+
+  render-api:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/render-control.Dockerfile
+    environment:
+      RENDER_DATABASE_URL: postgresql+psycopg://renderer:renderer@postgres:5432/renderer
+      BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio-secret
+      S3_BUCKET: manim-artifacts
+      RENDER_EXECUTION_MODE: celery
+      INTERNAL_RENDER_TOKEN: ${INTERNAL_RENDER_TOKEN:-render-secret}
+    ports:
+      - "8010:8010"
+
+  render-worker:
+    <<: *common
+    build:
+      context: .
+      dockerfile: docker/render-control.Dockerfile
+    user: root
+    command: ["celery", "-A", "manim_renderer.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "-Q", "renders"]
+    environment:
+      RENDER_DATABASE_URL: postgresql+psycopg://renderer:renderer@postgres:5432/renderer
+      BROKER_URL: amqp://guest:guest@rabbitmq:5672//
+      STORAGE_BACKEND: s3
+      S3_ENDPOINT_URL: http://minio:9000
+      S3_ACCESS_KEY: minio
+      S3_SECRET_KEY: minio-secret
+      S3_BUCKET: manim-artifacts
+      RENDER_RUNNER: docker
+      RENDER_IMAGE: agentic-manim-runtime:local
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      runtime-image:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+volumes:
+  postgres-data:
+  minio-data:

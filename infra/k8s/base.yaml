@@ -1,0 +1,218 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentic-manim
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: manim-secrets
+  namespace: agentic-manim
+type: Opaque
+stringData:
+  API_KEY: replace-me
+  INTERNAL_RENDER_TOKEN: replace-me
+  OPENAI_API_KEY: replace-me
+  DATABASE_URL: postgresql+psycopg://agent:replace-me@postgres/agent
+  RENDER_DATABASE_URL: postgresql+psycopg://renderer:replace-me@postgres/renderer
+  BROKER_URL: amqp://agent:replace-me@rabbitmq//
+  S3_ACCESS_KEY: replace-me
+  S3_SECRET_KEY: replace-me
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: manim-config
+  namespace: agentic-manim
+data:
+  STORAGE_BACKEND: s3
+  S3_ENDPOINT_URL: http://minio:9000
+  S3_BUCKET: manim-artifacts
+  MODEL_PROVIDER: openai
+  WORKFLOW_MODE: celery
+  RENDER_EXECUTION_MODE: celery
+  RENDER_RUNNER: kubernetes
+  RENDER_SERVICE_URL: http://render-api:8010
+  RENDER_IMAGE: agentic-manim-runtime:0.1.0
+  KUBERNETES_NAMESPACE: agentic-manim
+  KUBERNETES_WORK_PVC: manim-render-work
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: manim-render-work
+  namespace: agentic-manim
+spec:
+  accessModes: [ReadWriteMany]
+  resources:
+    requests:
+      storage: 20Gi
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: render-dispatcher
+  namespace: agentic-manim
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: render-job-manager
+  namespace: agentic-manim
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "watch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: render-job-manager
+  namespace: agentic-manim
+subjects:
+  - kind: ServiceAccount
+    name: render-dispatcher
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: render-job-manager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: control-api
+  namespace: agentic-manim
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: control-api}
+  template:
+    metadata:
+      labels: {app: control-api}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: agentic-manim-control:0.1.0
+          ports: [{containerPort: 8000}]
+          envFrom: [{secretRef: {name: manim-secrets}}, {configMapRef: {name: manim-config}}]
+          readinessProbe: {httpGet: {path: /health/ready, port: 8000}, periodSeconds: 5}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-worker
+  namespace: agentic-manim
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: agent-worker}
+  template:
+    metadata:
+      labels: {app: agent-worker}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: worker
+          image: agentic-manim-control:0.1.0
+          command: ["celery", "-A", "manim_agent.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=2"]
+          envFrom: [{secretRef: {name: manim-secrets}}, {configMapRef: {name: manim-config}}]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: render-api
+  namespace: agentic-manim
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: render-api}
+  template:
+    metadata:
+      labels: {app: render-api}
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: api
+          image: agentic-manim-render-control:0.1.0
+          ports: [{containerPort: 8010}]
+          envFrom: [{secretRef: {name: manim-secrets}}, {configMapRef: {name: manim-config}}]
+          readinessProbe: {httpGet: {path: /health/ready, port: 8010}, periodSeconds: 5}
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: render-worker
+  namespace: agentic-manim
+spec:
+  replicas: 2
+  selector:
+    matchLabels: {app: render-worker}
+  template:
+    metadata:
+      labels: {app: render-worker}
+    spec:
+      serviceAccountName: render-dispatcher
+      containers:
+        - name: worker
+          image: agentic-manim-render-control:0.1.0
+          command: ["celery", "-A", "manim_renderer.tasks:celery_app", "worker", "--loglevel=INFO", "--concurrency=1", "-Q", "renders"]
+          envFrom: [{secretRef: {name: manim-secrets}}, {configMapRef: {name: manim-config}}]
+          volumeMounts: [{name: work, mountPath: /render-shared}]
+          securityContext:
+            runAsNonRoot: true
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities: {drop: ["ALL"]}
+      volumes:
+        - name: work
+          persistentVolumeClaim: {claimName: manim-render-work}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: control-api
+  namespace: agentic-manim
+spec:
+  selector: {app: control-api}
+  ports: [{port: 8000, targetPort: 8000}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: render-api
+  namespace: agentic-manim
+spec:
+  selector: {app: render-api}
+  ports: [{port: 8010, targetPort: 8010}]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: deny-runtime-egress
+  namespace: agentic-manim
+spec:
+  podSelector:
+    matchLabels: {app: manim-runtime}
+  policyTypes: [Ingress, Egress]
+  ingress: []
+  egress: []
