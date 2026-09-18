@@ -4,8 +4,9 @@ import base64
 from abc import ABC, abstractmethod
 from typing import TypeVar
 
-from openai import OpenAI
-from pydantic import BaseModel
+from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 
 from manim_contracts.models import (
     CriticReport,
@@ -13,11 +14,13 @@ from manim_contracts.models import (
     SceneDesign,
     StoryBeat,
     Storyboard,
+    convert,
+    json_schema,
 )
 
 from .settings import Settings, get_settings
 
-T = TypeVar("T", bound=BaseModel)
+T = TypeVar("T")
 
 
 class ModelProvider(ABC):
@@ -32,54 +35,50 @@ class ModelProvider(ABC):
     ) -> T: ...
 
 
-class OpenAIProvider(ModelProvider):
-    def __init__(self, settings: Settings):
-        if not settings.openai_api_key:
-            raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai")
-        self.client = OpenAI(api_key=settings.openai_api_key)
-        self.text_model = settings.openai_text_model
-        self.vision_model = settings.openai_vision_model
+class LangChainProvider(ModelProvider):
+    """Provider-neutral structured generation over LangChain chat models."""
+
+    def __init__(self, text_model: BaseChatModel, vision_model: BaseChatModel):
+        self.text_model = text_model
+        self.vision_model = vision_model
 
     @staticmethod
-    def _format(schema: type[T]) -> dict:
-        return {
-            "type": "json_schema",
+    def _structured(model: BaseChatModel, schema: type[T]):
+        definition = {
             "name": schema.__name__,
-            "strict": True,
-            "schema": schema.model_json_schema(),
+            "description": f"Strict {schema.__name__} response",
+            "parameters": json_schema(schema),
         }
+        return model.with_structured_output(definition, method="json_schema", strict=True)
 
     def generate_structured(
         self, *, stage: str, instructions: str, prompt: str, schema: type[T]
     ) -> T:
-        response = self.client.responses.create(
-            model=self.text_model,
-            instructions=instructions,
-            input=prompt,
-            text={"format": self._format(schema)},
-            store=False,
-            metadata={"stage": stage},
+        result = self._structured(self.text_model, schema).invoke(
+            [SystemMessage(content=instructions), HumanMessage(content=prompt)],
+            config={"metadata": {"stage": stage}},
         )
-        return schema.model_validate_json(response.output_text)
+        return convert(result, schema)
 
     def analyze_images(
         self, *, instructions: str, prompt: str, images: list[bytes], schema: type[T]
     ) -> T:
-        content: list[dict] = [{"type": "input_text", "text": prompt}]
-        for raw in images:
-            encoded = base64.b64encode(raw).decode()
-            content.append(
-                {"type": "input_image", "image_url": f"data:image/png;base64,{encoded}", "detail": "high"}
-            )
-        response = self.client.responses.create(
-            model=self.vision_model,
-            instructions=instructions,
-            input=[{"role": "user", "content": content}],
-            text={"format": self._format(schema)},
-            store=False,
-            metadata={"stage": "critic"},
+        content: list[dict] = [{"type": "text", "text": prompt}]
+        content.extend(
+            {
+                "type": "image_url",
+                "image_url": {
+                    "url": f"data:image/png;base64,{base64.b64encode(raw).decode()}",
+                    "detail": "high",
+                },
+            }
+            for raw in images
         )
-        return schema.model_validate_json(response.output_text)
+        result = self._structured(self.vision_model, schema).invoke(
+            [SystemMessage(content=instructions), HumanMessage(content=content)],
+            config={"metadata": {"stage": "critic"}},
+        )
+        return convert(result, schema)
 
 
 class FakeProvider(ModelProvider):
@@ -149,7 +148,13 @@ class GeneratedScene(Scene):
 def get_model_provider(settings: Settings | None = None) -> ModelProvider:
     settings = settings or get_settings()
     if settings.model_provider == "openai":
-        return OpenAIProvider(settings)
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when MODEL_PROVIDER=openai")
+        common = {"api_key": settings.openai_api_key, "temperature": 0}
+        return LangChainProvider(
+            ChatOpenAI(model=settings.openai_text_model, **common),
+            ChatOpenAI(model=settings.openai_vision_model, **common),
+        )
     if settings.model_provider == "fake":
         return FakeProvider()
     raise ValueError(f"unsupported MODEL_PROVIDER: {settings.model_provider}")

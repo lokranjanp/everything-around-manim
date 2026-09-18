@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import os
 from threading import Lock
+from typing import Any
 
-from fastapi import FastAPI
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.asgi import OpenTelemetryMiddleware
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
@@ -15,7 +15,7 @@ _lock = Lock()
 _configured = False
 
 
-def configure_telemetry(app: FastAPI, service_name: str) -> None:
+def configure_telemetry(app: Any, service_name: str) -> Any:
     global _configured
     with _lock:
         if not _configured:
@@ -25,4 +25,4 @@ def configure_telemetry(app: FastAPI, service_name: str) -> None:
                 provider.add_span_processor(BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint)))
             trace.set_tracer_provider(provider)
             _configured = True
-    FastAPIInstrumentor.instrument_app(app)
+    return OpenTelemetryMiddleware(app)

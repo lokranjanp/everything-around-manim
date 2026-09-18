@@ -5,7 +5,7 @@ import io
 import tarfile
 from uuid import UUID
 
-from manim_contracts.models import AssetRef, RenderProfile, SceneManifest
+from manim_contracts.models import AssetRef, RenderProfile, SceneManifest, encode_json
 
 
 def build_scene_package(
@@ -26,7 +26,7 @@ def build_scene_package(
         profile=profile,
         assets=assets or [],
     )
-    manifest_bytes = manifest.model_dump_json(indent=2).encode()
+    manifest_bytes = encode_json(manifest, indent=2)
     buffer = io.BytesIO()
     with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
         for name, data in (("scene.py", source_bytes), ("manifest.json", manifest_bytes)):

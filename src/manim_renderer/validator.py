@@ -6,7 +6,7 @@ import io
 import tarfile
 from dataclasses import dataclass
 
-from manim_contracts.models import SceneManifest
+from manim_contracts.models import SceneManifest, decode_json
 
 
 class PackageValidationError(ValueError):
@@ -67,7 +67,7 @@ def validate_package(raw: bytes, expected: SceneManifest, expected_hash: str, ma
     except (tarfile.TarError, KeyError, AttributeError) as exc:
         raise PackageValidationError("invalid package archive") from exc
 
-    embedded = SceneManifest.model_validate_json(manifest_raw)
+    embedded = decode_json(manifest_raw, SceneManifest)
     if embedded != expected:
         raise PackageValidationError("embedded manifest does not match request")
     if hashlib.sha256(source).hexdigest() != embedded.source_sha256:
@@ -86,4 +86,3 @@ def validate_package(raw: bytes, expected: SceneManifest, expected_hash: str, ma
     if not base_names.intersection(allowed_bases):
         raise PackageValidationError("scene class must inherit from an allowed Manim Scene")
     return ValidatedPackage(source=source, manifest=embedded)
-

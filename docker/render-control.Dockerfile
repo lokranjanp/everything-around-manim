@@ -5,7 +5,7 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir '.[renderer]'
+RUN python -c "import importlib.util; assert importlib.util.find_spec('pydantic') is None"
 RUN useradd --create-home --uid 10001 renderer-control
 USER 10001:10001
 CMD ["uvicorn", "manim_renderer.api:app", "--host", "0.0.0.0", "--port", "8010"]
-

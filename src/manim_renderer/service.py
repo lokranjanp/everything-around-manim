@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import hashlib
 
-from manim_contracts.models import Artifact, RenderStatus, SceneManifest, utcnow
+from manim_contracts.models import (
+    Artifact,
+    RenderStatus,
+    SceneManifest,
+    convert,
+    to_builtins,
+    utcnow,
+)
 
 from .db import RenderJob, SessionLocal
 from .runner import RenderCancelled, get_runner
@@ -25,7 +32,7 @@ def execute_render_job(job_id: str) -> None:
         session.commit()
         try:
             raw = store.get_bytes(job.package_key)
-            manifest = SceneManifest.model_validate(job.manifest)
+            manifest = convert(job.manifest, SceneManifest)
             validated = validate_package(
                 raw, manifest, job.package_sha256, settings.max_package_bytes
             )
@@ -83,8 +90,9 @@ def execute_render_job(job_id: str) -> None:
                         object_key=key,
                         sha256=hashlib.sha256(data).hexdigest(),
                         size_bytes=len(data),
-                    ).model_dump(mode="json")
+                    )
                 )
+            artifacts = [to_builtins(artifact) for artifact in artifacts]
             job.artifacts = artifacts
             job.logs = result.logs
             job.status = RenderStatus.COMPLETED.value

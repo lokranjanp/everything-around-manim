@@ -1,12 +1,12 @@
 import hashlib
 
-from fastapi.testclient import TestClient
+from litestar.testing import TestClient
 
-from manim_agent import api
+from manim_control import api
 
 
 def test_generation_creation_is_idempotent(monkeypatch):
-    monkeypatch.setattr(api, "_dispatch", lambda generation_id, background: None)
+    monkeypatch.setattr(api, "_dispatch", lambda generation_id: None)
     headers = {"X-API-Key": "dev-secret", "Idempotency-Key": "same-request"}
     with TestClient(api.app) as client:
         first = client.post("/v1/generations", headers=headers, json={"prompt": "Explain vectors"})
@@ -17,7 +17,7 @@ def test_generation_creation_is_idempotent(monkeypatch):
 
 
 def test_idempotency_key_cannot_hide_a_different_request(monkeypatch):
-    monkeypatch.setattr(api, "_dispatch", lambda generation_id, background: None)
+    monkeypatch.setattr(api, "_dispatch", lambda generation_id: None)
     headers = {"X-API-Key": "dev-secret", "Idempotency-Key": "collision"}
     with TestClient(api.app) as client:
         assert client.post("/v1/generations", headers=headers, json={"prompt": "First prompt"}).status_code == 202
@@ -26,7 +26,7 @@ def test_idempotency_key_cannot_hide_a_different_request(monkeypatch):
 
 
 def test_api_key_is_required(monkeypatch):
-    monkeypatch.setattr(api, "_dispatch", lambda generation_id, background: None)
+    monkeypatch.setattr(api, "_dispatch", lambda generation_id: None)
     with TestClient(api.app) as client:
         response = client.post(
             "/v1/generations",
@@ -34,6 +34,20 @@ def test_api_key_is_required(monkeypatch):
             json={"prompt": "Explain vectors"},
         )
     assert response.status_code == 422
+
+
+def test_v1_docs_alias_and_validation_shape():
+    with TestClient(api.litestar_app) as client:
+        schema = client.get("/openapi.json")
+        invalid = client.post(
+            "/v1/generations",
+            headers={"X-API-Key": "dev-secret", "Idempotency-Key": "invalid"},
+            json={"prompt": "x", "unexpected": True},
+        )
+    assert schema.status_code == 200
+    assert "/v1/generations" in schema.json()["paths"]
+    assert invalid.status_code == 422
+    assert "detail" in invalid.json()
 
 
 def test_asset_upload_is_hash_verified():

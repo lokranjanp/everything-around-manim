@@ -7,5 +7,5 @@ COPY src ./src
 RUN pip install --no-cache-dir .
 RUN useradd --create-home --uid 10001 app
 USER 10001:10001
-CMD ["uvicorn", "manim_agent.api:app", "--host", "0.0.0.0", "--port", "8000"]
-
+RUN python -c "import importlib.util; assert importlib.util.find_spec('pydantic') is None"
+CMD ["uvicorn", "manim_control.api:app", "--host", "0.0.0.0", "--port", "8000"]

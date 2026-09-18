@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install -e '.[dev,renderer]'
+      - run: pip install -e '.[dev,renderer,agent]'
       - run: ruff check .
       - run: pytest --cov=src --cov-report=term-missing
 
@@ -26,7 +26,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -f docker/control.Dockerfile -t agentic-manim-control:test .
+      - run: docker build -f docker/agent-worker.Dockerfile -t agentic-manim-agent:test .
       - run: docker build -f docker/render-control.Dockerfile -t agentic-manim-render-control:test .
       - run: docker build -f docker/runtime.Dockerfile -t agentic-manim-runtime:test .
       - run: docker compose config -q
-
+      - run: docker run --rm agentic-manim-control:test python -c "import importlib.util; assert importlib.util.find_spec('pydantic') is None"
+      - run: docker run --rm agentic-manim-render-control:test python -c "import importlib.util; assert importlib.util.find_spec('pydantic') is None"
+      - run: docker run --rm agentic-manim-agent:test python -c "import langgraph, pydantic"

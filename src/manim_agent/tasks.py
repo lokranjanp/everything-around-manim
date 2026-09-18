@@ -11,6 +11,12 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_serializer="json",
     accept_content=["json"],
+    beat_schedule={
+        "cleanup-expired-langgraph-checkpoints": {
+            "task": "manim_agent.cleanup_checkpoints",
+            "schedule": 24 * 60 * 60,
+        }
+    },
 )
 
 
@@ -18,3 +24,9 @@ celery_app.conf.update(
 def run_generation_task(generation_id: str) -> None:
     run_generation(generation_id)
 
+
+@celery_app.task(name="manim_agent.cleanup_checkpoints")
+def cleanup_checkpoints_task() -> int:
+    from .checkpoints import cleanup_expired_checkpoints
+
+    return cleanup_expired_checkpoints()

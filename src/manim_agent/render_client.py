@@ -6,7 +6,13 @@ from uuid import UUID
 
 import httpx
 
-from manim_contracts.models import RenderJobCreate, RenderJobRead, RenderStatus
+from manim_contracts.models import (
+    RenderJobCreate,
+    RenderJobRead,
+    RenderStatus,
+    convert,
+    to_builtins,
+)
 
 from .settings import Settings, get_settings
 
@@ -23,9 +29,11 @@ class RenderClient:
         should_cancel: Callable[[], bool] | None = None,
     ) -> RenderJobRead:
         with httpx.Client(base_url=self.settings.render_service_url, timeout=30) as client:
-            response = client.post("/internal/v1/render-jobs", headers=self.headers, json=request.model_dump(mode="json"))
+            response = client.post(
+                "/internal/v1/render-jobs", headers=self.headers, json=to_builtins(request)
+            )
             response.raise_for_status()
-            job = RenderJobRead.model_validate(response.json())
+            job = convert(response.json(), RenderJobRead)
             deadline = time.monotonic() + timeout_seconds
             while job.status not in {
                 RenderStatus.COMPLETED,
@@ -42,7 +50,7 @@ class RenderClient:
                 time.sleep(1)
                 response = client.get(f"/internal/v1/render-jobs/{job.id}", headers=self.headers)
                 response.raise_for_status()
-                job = RenderJobRead.model_validate(response.json())
+                job = convert(response.json(), RenderJobRead)
             return job
 
     def cancel(self, job_id: UUID) -> None:

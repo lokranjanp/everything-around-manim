@@ -4,7 +4,18 @@ from datetime import datetime
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from sqlalchemy import JSON, DateTime, Float, ForeignKey, Integer, String, Text, create_engine
+from sqlalchemy import (
+    JSON,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    create_engine,
+    select,
+)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
 
 from manim_contracts.models import GenerationStatus, utcnow
@@ -50,11 +61,13 @@ class Generation(Base):
 
 class Event(Base):
     __tablename__ = "generation_events"
+    __table_args__ = (UniqueConstraint("generation_id", "event_key", name="uq_generation_event_key"),)
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     generation_id: Mapped[str] = mapped_column(ForeignKey("generations.id"), index=True)
     status: Mapped[str] = mapped_column(String(40))
     message: Mapped[str] = mapped_column(Text)
+    event_key: Mapped[str | None] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     generation: Mapped[Generation] = relationship(back_populates="events")
 
@@ -107,8 +120,18 @@ def get_session():
         yield session
 
 
-def add_event(session, generation: Generation, status: GenerationStatus, message: str) -> None:
+def add_event(
+    session, generation: Generation, status: GenerationStatus, message: str,
+    event_key: str | None = None,
+) -> None:
     generation.status = status.value
     generation.updated_at = utcnow()
-    session.add(Event(generation_id=generation.id, status=status.value, message=message))
+    existing = None
+    if event_key:
+        existing = session.scalar(select(Event).where(
+            Event.generation_id == generation.id, Event.event_key == event_key
+        ))
+    if existing is None:
+        session.add(Event(generation_id=generation.id, status=status.value,
+                          message=message, event_key=event_key))
     session.commit()

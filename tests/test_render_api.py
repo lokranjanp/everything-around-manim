@@ -1,9 +1,9 @@
 from uuid import uuid4
 
-from fastapi.testclient import TestClient
+from litestar.testing import TestClient
 
 from manim_agent.package import build_scene_package, package_hash
-from manim_contracts.models import RenderProfile
+from manim_contracts.models import RenderProfile, to_builtins
 from manim_renderer import api
 from manim_renderer.settings import get_render_settings
 from manim_renderer.storage import get_render_store
@@ -33,7 +33,7 @@ def test_fake_render_job_completes():
         response = client.post(
             "/internal/v1/render-jobs",
             headers=headers,
-            json={"package_key": key, "package_sha256": package_hash(raw), "manifest": manifest.model_dump(mode="json")},
+            json={"package_key": key, "package_sha256": package_hash(raw), "manifest": to_builtins(manifest)},
         )
         assert response.status_code == 202
         job_id = response.json()["id"]
