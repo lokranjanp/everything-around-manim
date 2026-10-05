@@ -11,7 +11,6 @@ from litestar.openapi.config import OpenAPIConfig
 from litestar.openapi.plugins import SwaggerRenderPlugin
 from litestar.params import FromPath
 from litestar.response import Stream
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, generate_latest
 from sqlalchemy import select
 
 from manim_agent.auth import AuthenticationError, authenticate_api_key, validate_idempotency_key
@@ -41,11 +40,12 @@ from manim_contracts.models import (
     encode_json,
     to_builtins,
 )
-from manim_contracts.telemetry import configure_telemetry
 
-from .queue import dispatch_generation
-
-CREATED = Counter("manim_generations_created_total", "Generations created")
+from .queue import (
+    dispatch_generation,
+    start_generation_queue,
+    stop_generation_queue,
+)
 
 
 def _headers(request: Request, *, idempotent: bool = False) -> tuple[str, str | None]:
@@ -102,11 +102,6 @@ def ready() -> dict[str, str]:
     with SessionLocal() as session:
         session.execute(select(1))
     return {"status": "ready"}
-
-
-@get("/metrics", include_in_schema=False, sync_to_thread=False)
-def metrics() -> Response:
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @get("/openapi.json", include_in_schema=False, sync_to_thread=False)
@@ -205,7 +200,6 @@ def create_generation(data: GenerationCreate, request: Request) -> GenerationRea
                           message="Generation queued", event_key="queued"))
         session.commit()
         result = _generation_read(generation)
-    CREATED.inc()
     _dispatch(str(result.id))
     return result
 
@@ -314,13 +308,14 @@ def http_exception_handler(request: Request, exc: HTTPException) -> Response:
 
 
 litestar_app = Litestar(
-    route_handlers=[live, ready, metrics, openapi_json, create_upload_intent, dev_upload, dev_download,
+    route_handlers=[live, ready, openapi_json, create_upload_intent, dev_upload, dev_download,
                     complete_upload, create_generation, get_generation, get_artifacts,
                     cancel_generation, create_revision, stream_events],
-    on_startup=[create_schema],
+    on_startup=[create_schema, start_generation_queue],
+    on_shutdown=[stop_generation_queue],
     exception_handlers={HTTPException: http_exception_handler,
                         ValidationException: validation_handler},
     openapi_config=OpenAPIConfig(title="Agentic Manim Control API", version="0.1.0",
                                  path="/docs", render_plugins=[SwaggerRenderPlugin()]),
 )
-app = configure_telemetry(litestar_app, "manim-control-api")
+app = litestar_app

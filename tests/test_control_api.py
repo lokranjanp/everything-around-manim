@@ -50,6 +50,12 @@ def test_v1_docs_alias_and_validation_shape():
     assert "detail" in invalid.json()
 
 
+def test_enterprise_operations_routes_are_not_exposed():
+    with TestClient(api.app) as client:
+        assert client.get("/metrics").status_code == 404
+        assert client.get("/internal/v1/render-jobs/00000000-0000-0000-0000-000000000000").status_code == 404
+
+
 def test_asset_upload_is_hash_verified():
     payload = b"not-a-real-image-but-valid-upload-contract"
     digest = hashlib.sha256(payload).hexdigest()

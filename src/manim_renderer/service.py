@@ -1,40 +1,46 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
+from uuid import uuid4
 
+from manim_agent.settings import Settings, get_settings
+from manim_agent.storage import ObjectStore, get_object_store
 from manim_contracts.models import (
     Artifact,
+    RenderJobCreate,
+    RenderJobRead,
     RenderStatus,
-    SceneManifest,
-    convert,
-    to_builtins,
-    utcnow,
 )
 
-from .db import RenderJob, SessionLocal
-from .runner import RenderCancelled, get_runner
-from .settings import get_render_settings
-from .storage import get_render_store
+from .runner import RenderCancelled, Runner, get_runner
 from .validator import PackageValidationError, validate_package
 
 
-def execute_render_job(job_id: str) -> None:
-    settings = get_render_settings()
-    store = get_render_store(settings)
-    with SessionLocal() as session:
-        job = session.get(RenderJob, job_id)
-        if job is None or job.cancel_requested:
-            if job:
-                job.status = RenderStatus.CANCELLED.value
-                session.commit()
-            return
-        job.status = RenderStatus.VALIDATING.value
-        session.commit()
+class LocalRenderService:
+    def __init__(
+        self,
+        settings: Settings | None = None,
+        store: ObjectStore | None = None,
+        runner: Runner | None = None,
+    ):
+        self.settings = settings or get_settings()
+        self.store = store or get_object_store(self.settings)
+        self.runner = runner or get_runner(self.settings)
+
+    def render(
+        self,
+        request: RenderJobCreate,
+        should_cancel: Callable[[], bool] | None = None,
+    ) -> RenderJobRead:
+        job_id = uuid4()
         try:
-            raw = store.get_bytes(job.package_key)
-            manifest = convert(job.manifest, SceneManifest)
+            if should_cancel and should_cancel():
+                raise RenderCancelled("render cancelled")
+            raw = self.store.get_bytes(request.package_key)
+            manifest = request.manifest
             validated = validate_package(
-                raw, manifest, job.package_sha256, settings.max_package_bytes
+                raw, manifest, request.package_sha256, self.settings.max_package_bytes
             )
             assets: dict[str, bytes] = {}
             for asset in manifest.assets:
@@ -46,32 +52,17 @@ def execute_render_job(job_id: str) -> None:
                     raise PackageValidationError(
                         f"asset media type is not allowed: {asset.media_type}"
                     )
-                data = store.get_bytes(asset.object_key)
+                data = self.store.get_bytes(asset.object_key)
                 if len(data) != asset.size_bytes:
                     raise PackageValidationError(f"asset size mismatch: {asset.asset_id}")
                 if hashlib.sha256(data).hexdigest() != asset.sha256:
                     raise PackageValidationError(f"asset checksum mismatch: {asset.asset_id}")
                 assets[asset.runtime_path] = data
-            session.refresh(job)
-            if job.cancel_requested:
-                job.status = RenderStatus.CANCELLED.value
-                session.commit()
-                return
-            job.status = RenderStatus.RUNNING.value
-            session.commit()
-            def cancelled() -> bool:
-                with SessionLocal() as cancel_session:
-                    current = cancel_session.get(RenderJob, job_id)
-                    return current is None or current.cancel_requested
-
-            result = get_runner(settings).run(
-                validated.source, validated.manifest, assets, cancel_check=cancelled
+            if should_cancel and should_cancel():
+                raise RenderCancelled("render cancelled")
+            result = self.runner.run(
+                validated.source, validated.manifest, assets, cancel_check=should_cancel
             )
-            session.refresh(job)
-            if job.cancel_requested:
-                job.status = RenderStatus.CANCELLED.value
-                session.commit()
-                return
             prefix = (
                 f"generations/{manifest.generation_id}/attempts/{manifest.attempt}/"
                 f"{manifest.profile.quality}"
@@ -79,11 +70,16 @@ def execute_render_job(job_id: str) -> None:
             outputs = [
                 ("mp4", f"{prefix}/final.mp4", result.mp4, "video/mp4"),
                 ("png", f"{prefix}/final.png", result.png, "image/png"),
-                ("contact_sheet", f"{prefix}/contact-sheet.png", result.contact_sheet, "image/png"),
+                (
+                    "contact_sheet",
+                    f"{prefix}/contact-sheet.png",
+                    result.contact_sheet,
+                    "image/png",
+                ),
             ]
-            artifacts: list[dict] = []
+            artifacts = []
             for kind, key, data, content_type in outputs:
-                store.put_bytes(key, data, content_type)
+                self.store.put_bytes(key, data, content_type)
                 artifacts.append(
                     Artifact(
                         kind=kind,
@@ -92,25 +88,21 @@ def execute_render_job(job_id: str) -> None:
                         size_bytes=len(data),
                     )
                 )
-            artifacts = [to_builtins(artifact) for artifact in artifacts]
-            job.artifacts = artifacts
-            job.logs = result.logs
-            job.status = RenderStatus.COMPLETED.value
-            job.updated_at = utcnow()
-            session.commit()
+            return RenderJobRead(
+                id=job_id,
+                status=RenderStatus.COMPLETED,
+                artifacts=artifacts,
+                logs=result.logs,
+            )
         except RenderCancelled:
-            session.rollback()
-            job = session.get(RenderJob, job_id)
-            job.status = RenderStatus.CANCELLED.value
-            job.error_code = None
-            job.error_message = None
-            job.updated_at = utcnow()
-            session.commit()
+            return RenderJobRead(id=job_id, status=RenderStatus.CANCELLED)
         except Exception as exc:
-            session.rollback()
-            job = session.get(RenderJob, job_id)
-            job.status = RenderStatus.FAILED.value
-            job.error_code = "PACKAGE_REJECTED" if isinstance(exc, PackageValidationError) else type(exc).__name__
-            job.error_message = str(exc)[:4000]
-            job.updated_at = utcnow()
-            session.commit()
+            error_code = (
+                "PACKAGE_REJECTED" if isinstance(exc, PackageValidationError) else type(exc).__name__
+            )
+            return RenderJobRead(
+                id=job_id,
+                status=RenderStatus.FAILED,
+                error_code=error_code,
+                error_message=str(exc)[:4000],
+            )

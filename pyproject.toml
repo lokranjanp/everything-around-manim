@@ -5,22 +5,16 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentic-manim"
 version = "0.1.0"
-description = "Agentic control plane and isolated runtime for Manim video generation"
+description = "Local-first agentic Manim video generation"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
-  "alembic>=1.14,<2",
-  "boto3>=1.35,<2",
-  "celery>=5.4,<6",
-  "httpx>=0.28,<1",
+  "docker>=7.1,<8",
+  "langchain-core>=1,<2",
+  "langchain-openai>=1,<2",
+  "langgraph>=1.2,<2",
   "litestar>=2.24,<3",
   "msgspec>=0.19,<1",
-  "opentelemetry-api>=1.30,<2",
-  "opentelemetry-exporter-otlp-proto-http>=1.30,<2",
-  "opentelemetry-instrumentation-asgi>=0.51b0,<1",
-  "opentelemetry-sdk>=1.30,<2",
-  "prometheus-client>=0.21,<1",
-  "psycopg[binary]>=3.2,<4",
   "python-dotenv>=1.0,<2",
   "python-multipart>=0.0.20,<1",
   "sqlalchemy>=2.0,<3",
@@ -28,19 +22,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-agent = [
-  "langchain-core>=1,<2",
-  "langchain-openai>=1,<2",
-  "langgraph>=1.2,<2",
-  "langgraph-checkpoint-postgres>=3.1,<4",
-]
 dev = [
   "pytest>=8.3,<9",
   "pytest-cov>=6,<7",
   "pytest-asyncio>=0.25,<1",
   "ruff>=0.9,<1",
 ]
-renderer = ["docker>=7.1,<8", "kubernetes>=31,<35"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

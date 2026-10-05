@@ -1,1 +1,1 @@
-"""Pydantic-free control-plane service."""
+"""Local-first Agentic Manim API."""

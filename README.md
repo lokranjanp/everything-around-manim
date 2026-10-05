@@ -1,34 +1,43 @@
 # Agentic Manim
 
-API-first platform that turns a prompt into a reviewed Manim animation while keeping generated
-Python and the Manim toolchain outside the agent control plane.
+Local-first API that turns a prompt into a reviewed Manim animation. Application state lives in
+SQLite, artifacts live on the local filesystem, and generated Python runs inside an isolated
+Docker container.
 
 ## Architecture
 
 ```text
-client -> Litestar control API -> Celery -> LangGraph agent worker
-                                              |
-                                              v
-                                  render API -> isolated Manim container
-                                      ^                 |
-                                      +-- visual critic-+
+client -> Litestar API -> local background worker -> LangGraph
+                                                     |
+                                                     v
+                                      isolated Manim container
+                                                     |
+                                             visual critic loop
 ```
 
-The control plane stores the public generation projection and emits Server-Sent Events. The agent
-worker executes a checkpointed LangGraph and uses LangChain chat-model interfaces for structured
-text and vision calls. The render service validates a versioned scene package, then runs it without
-model credentials or network access.
-
-Public and render-service contracts use `msgspec`. Pydantic is absent from those images and exists
-only as a transitive LangGraph/LangChain dependency in the separate agent image.
+The API stores generation state in `.data/agent.db`, saves uploads and render artifacts under
+`.data/objects`, and emits progress through Server-Sent Events. A single local worker executes the
+LangGraph workflow. Scene packages are validated before Docker runs them without network access or
+model credentials.
 
 ## Local development
 
-1. Copy `.env.example` to `.env`.
-2. Set `MODEL_PROVIDER=fake` for a credential-free workflow, or set `OPENAI_API_KEY` and choose
-   OpenAI model IDs.
-3. Run `docker compose up --build`. Compose initializes the LangGraph checkpoint schema first.
-4. Create a generation:
+1. Create a Python 3.11 or 3.12 virtual environment and run `pip install -e .`.
+2. Copy `.env.example` to `.env`. Keep `MODEL_PROVIDER=fake` for a credential-free workflow, or
+   set `OPENAI_API_KEY` and choose OpenAI model IDs.
+3. Build the isolated rendering image:
+
+```bash
+docker build -f docker/runtime.Dockerfile -t agentic-manim-runtime:local .
+```
+
+4. Start the single local API:
+
+```bash
+uvicorn manim_control.api:app --host 127.0.0.1 --port 8000
+```
+
+5. Create a generation:
 
 ```bash
 curl -X POST http://localhost:8000/v1/generations \
@@ -38,15 +47,12 @@ curl -X POST http://localhost:8000/v1/generations \
   -d '{"prompt":"Explain gradient descent visually"}'
 ```
 
-The public API is documented at `http://localhost:8000/docs`; render-service documentation is at
-`http://localhost:8010/docs` and requires the internal service token for job endpoints.
+The API is documented at `http://localhost:8000/docs`. Set `DATA_ROOT` to move the SQLite database
+and artifact directory somewhere other than `.data`.
 
 ## Security boundary
 
-Agent containers do not install Manim, LaTeX, ffmpeg, or the Docker SDK. The render dispatcher is a
-separate deployable service. In local Compose it launches a short-lived child container with no
-network, read-only source, dropped capabilities, non-root identity, process/memory/CPU limits, and
-an ephemeral filesystem. Kubernetes deployments use one locked-down Job per render.
-
-Do not expose the render API or Docker socket proxy publicly. The fake renderer is for tests and
-API development only.
+The local app launches a short-lived rendering container with no network, a read-only root
+filesystem, dropped capabilities, a non-root identity, process/memory/CPU limits, and ephemeral
+temporary filesystems. Model credentials are never copied into the container. The fake renderer is
+for tests and API development only.

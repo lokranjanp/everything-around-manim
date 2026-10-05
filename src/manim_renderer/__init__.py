@@ -1,2 +1,1 @@
-"""Isolated Manim render control plane."""
-
+"""Validated, Docker-isolated Manim rendering."""

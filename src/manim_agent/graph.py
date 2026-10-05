@@ -7,7 +7,6 @@ from typing import Any, Literal, TypedDict
 from uuid import UUID
 
 from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import RetryPolicy
 from sqlalchemy import select
@@ -334,12 +333,7 @@ class AnimationGraph:
                     add_event(session, generation, GenerationStatus.FAILED, "Workflow failed", "failed")
 
     def _run(self, generation_id: str) -> None:
-        if self.checkpointer is not None:
-            context = nullcontext(self.checkpointer)
-        elif self.settings.langgraph_database_url:
-            context = PostgresSaver.from_conn_string(self.settings.langgraph_database_url)
-        else:
-            context = nullcontext(InMemorySaver())
+        context = nullcontext(self.checkpointer or InMemorySaver())
         with context as checkpointer:
             graph = self.build(checkpointer)
             config = {"configurable": {"thread_id": generation_id}, "recursion_limit": 50}

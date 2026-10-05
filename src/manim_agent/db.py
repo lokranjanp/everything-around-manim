@@ -14,6 +14,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    event,
     select,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, sessionmaker
@@ -98,7 +99,7 @@ class IdempotencyRecord(Base):
 
 def _prepare_sqlite(url: str) -> None:
     if url.startswith("sqlite:///"):
-        Path(url.removeprefix("sqlite:///" )).parent.mkdir(parents=True, exist_ok=True)
+        Path(url.removeprefix("sqlite:///")).parent.mkdir(parents=True, exist_ok=True)
 
 
 settings = get_settings()
@@ -108,6 +109,18 @@ engine = create_engine(
     pool_pre_ping=True,
     connect_args={"check_same_thread": False} if settings.database_url.startswith("sqlite") else {},
 )
+
+
+@event.listens_for(engine, "connect")
+def _configure_sqlite(dbapi_connection, connection_record) -> None:
+    if settings.database_url.startswith("sqlite"):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA busy_timeout=5000")
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+
 SessionLocal = sessionmaker(engine, expire_on_commit=False)
 
 
